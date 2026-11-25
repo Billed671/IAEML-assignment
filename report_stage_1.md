@@ -31,9 +31,8 @@ The environment clips both values to the interval `[-1, 1]`. The steering actuat
 
 The implementation uses a kinematic single-track (bicycle) model. The simulation time step is inherited from `BaseEnv`:
 
-\[
-\Delta t = 1 / \text{FPS}.
-\]
+
+$\Delta t = 1 / \text{FPS}.$
 
 ### 4.1 Longitudinal dynamics
 
@@ -49,41 +48,35 @@ The commanded acceleration depends on the sign of throttle:
 
 Rolling resistance and aerodynamic drag are subtracted:
 
-\[
- a_{raw} = a_{cmd} - c_r\,\mathrm{sign}(v_t) - c_d v_t |v_t|.
-\]
+
+$a_{raw} = a_{cmd} - c_r\,\mathrm{sign}(v_t) - c_d v_t |v_t|.$
 
 The tire-road friction coefficient limits the available longitudinal acceleration:
 
-\[
- |a_t| \leq \mu g.
-\]
+
+$|a_t| \leq \mu g.$
 
 Speed is then integrated and clipped to the physical interval:
 
-\[
- v_{t+1} = \mathrm{clip}(v_t + a_t\Delta t, 0, v_{max}).
-\]
+
+$v_{t+1} = \mathrm{clip}(v_t + a_t\Delta t, 0, v_{max}).$
 
 ### 4.2 Steering and yaw rate
 
 The requested steering angle is `s_t * max_steering_angle`. A rate limiter models the steering actuator:
 
-\[
- |\delta_{t+1}-\delta_t| \leq \dot\delta_{max}\Delta t.
-\]
+
+$|\delta_{t+1}-\delta_t| \leq \dot\delta_{max}\Delta t.$
 
 The bicycle model computes yaw rate as:
 
-\[
- \dot\psi = \frac{\bar v}{L}\tan(\delta),
-\]
+
+$\dot\psi = \frac{\bar v}{L}\tan(\delta),$
 
 where `L` is the wheelbase and `v_bar` is the average speed during the step. The yaw rate is also limited so lateral acceleration does not exceed the available tire grip:
 
-\[
- \bar v |\dot\psi| \leq \mu g.
-\]
+
+$\bar v |\dot\psi| \leq \mu g.$
 
 The new heading is obtained by rotating the old heading by `yaw_rate * dt`. Position is integrated using the average speed and midpoint heading. This gives a more stable update while the car is turning.
 
