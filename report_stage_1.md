@@ -19,8 +19,9 @@ The inherited `agent_pos` is the vehicle position, and `agent_forward_dir` is it
 
 The action is a two-dimensional continuous vector:
 
-
-$a_t = [u_t, s_t], \qquad u_t,s_t \in [-1,1].$
+$$
+ a_t = [u_t, s_t], \qquad u_t,s_t \in [-1,1].
+$$
 
 - `u_t` is throttle. Positive values accelerate; negative values brake.
 - `s_t` is steering. Negative values steer right; positive values steer left.
@@ -31,52 +32,59 @@ The environment clips both values to the interval `[-1, 1]`. The steering actuat
 
 The implementation uses a kinematic single-track (bicycle) model. The simulation time step is inherited from `BaseEnv`:
 
-
-$\Delta t = 1 / \text{FPS}.$
+$$
+\Delta t = 1 / \text{FPS}.
+$$
 
 ### 4.1 Longitudinal dynamics
 
 The commanded acceleration depends on the sign of throttle:
 
-\[
+$$
  a_{cmd} =
  \begin{cases}
  u_t a_{max}, & u_t \ge 0,\\
  u_t a_{brake}, & u_t < 0.
  \end{cases}
-\]
+$$
 
 Rolling resistance and aerodynamic drag are subtracted:
 
-
-$a_{raw} = a_{cmd} - c_r\,\mathrm{sign}(v_t) - c_d v_t |v_t|.$
+$$
+ a_{raw} = a_{cmd} - c_r\,\mathrm{sign}(v_t) - c_d v_t |v_t|.
+$$
 
 The tire-road friction coefficient limits the available longitudinal acceleration:
 
-
-$|a_t| \leq \mu g.$
+$$
+ |a_t| \leq \mu g.
+$$
 
 Speed is then integrated and clipped to the physical interval:
 
-
-$v_{t+1} = \mathrm{clip}(v_t + a_t\Delta t, 0, v_{max}).$
+$$
+ v_{t+1} = \mathrm{clip}(v_t + a_t\Delta t, 0, v_{max}).
+$$
 
 ### 4.2 Steering and yaw rate
 
 The requested steering angle is `s_t * max_steering_angle`. A rate limiter models the steering actuator:
 
-
-$|\delta_{t+1}-\delta_t| \leq \dot\delta_{max}\Delta t.$
+$$
+ |\delta_{t+1}-\delta_t| \leq \dot\delta_{max}\Delta t.
+$$
 
 The bicycle model computes yaw rate as:
 
-
-$\dot\psi = \frac{\bar v}{L}\tan(\delta),$
+$$
+ \dot\psi = \frac{\bar v}{L}\tan(\delta),
+$$
 
 where `L` is the wheelbase and `v_bar` is the average speed during the step. The yaw rate is also limited so lateral acceleration does not exceed the available tire grip:
 
-
-$\bar v |\dot\psi| \leq \mu g.$
+$$
+ \bar v |\dot\psi| \leq \mu g.
+$$
 
 The new heading is obtained by rotating the old heading by `yaw_rate * dt`. Position is integrated using the average speed and midpoint heading. This gives a more stable update while the car is turning.
 
@@ -112,7 +120,7 @@ The observation reuses all `BaseEnv` perception features and adds vehicle inform
 
 The reward is dense and combines progress with safety and control costs:
 
-\[
+$$
 \begin{aligned}
  r_t ={}& w_p(d_t-d_{t+1})
  - w_{path}\,D_{path}
@@ -122,7 +130,7 @@ The reward is dense and combines progress with safety and control costs:
  - C_{collision}\mathbb{1}_{collision}
  - C_{timeout}\mathbb{1}_{timeout}.
 \end{aligned}
-\]
+$$
 
 Here `d_t` and `d_(t+1)` are the distances to the goal before and after the transition. Positive progress increases reward. Staying close to the planned path and avoiding unnecessary steering are encouraged. Reaching the goal gives a positive terminal bonus, while collision and timeout produce penalties.
 
