@@ -19,9 +19,8 @@ The inherited `agent_pos` is the vehicle position, and `agent_forward_dir` is it
 
 The action is a two-dimensional continuous vector:
 
-\[
- a_t = [u_t, s_t], \qquad u_t,s_t \in [-1,1].
-\]
+
+$a_t = [u_t, s_t], \qquad u_t,s_t \in [-1,1].$
 
 - `u_t` is throttle. Positive values accelerate; negative values brake.
 - `s_t` is steering. Negative values steer right; positive values steer left.
