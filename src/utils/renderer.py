@@ -33,6 +33,9 @@ class PygameFrontend:
         self.env = env
         self.params = env_params
         self.init_state = init_state
+        # AutoResetWrapper stores the actual environment class in ``env``.
+        base_env = getattr(env, "env", env)
+        self.vehicle_controls = bool(getattr(base_env, "uses_vehicle_controls", False))
         self.eval_mode = eval_mode
         self.agent_fn = agent_fn
         self.screen = pygame.display.set_mode(CANVAS_SIZE, pygame.RESIZABLE)
@@ -209,23 +212,36 @@ class PygameFrontend:
         step = int(state.time)
         distance = np.linalg.norm(state.goal_pos - state.agent_pos)
         path_gap = getattr(observation, "distance_to_path", None)
-        metrics = (
-            ("Step", f"{step:,} / {self.params.max_steps_in_episode:,}"),
-            ("Sim time", f"{step * self.params.step_size:.2f} s"),
-            ("Goal distance", f"{distance:.2f}"),
-            ("Path offset", f"{float(path_gap):.2f}" if path_gap is not None else "—"),
-            ("Last reward", f"{float(reward):+.2f}"),
+        step_limit = (
+            "∞" if self.params.max_steps_in_episode <= 0
+            else f"{self.params.max_steps_in_episode:,}"
         )
+        metrics = [
+            ("Step", f"{step:,} / {step_limit}"),
+            ("Sim time", f"{step * self.params.step_size:.2f} s"),
+        ]
+        if self.vehicle_controls:
+            metrics.extend([
+                ("Speed", f"{float(state.speed):+.2f} m/s"),
+                ("Steering", f"{math.degrees(float(state.steering_angle)):+.1f}°"),
+            ])
+        metrics.extend([
+            ("Goal distance", f"{distance:.2f} m"),
+            ("Path offset", f"{float(path_gap):.2f} m" if path_gap is not None else "—"),
+            ("Last reward", f"{float(reward):+.2f}"),
+        ])
         for index, (label, value) in enumerate(metrics):
-            y = 155 + index * 42
+            y = 151 + index * 32
             self.text(label, (left, y), "label", MUTED)
             self.text(value, (right, y), "label", align_right=True)
             pygame.draw.line(self.canvas, BORDER, (left, y + 26), (right, y + 26))
 
-        self.text("Range sensors", (left, 379), "heading")
+        sensors_y = 151 + len(metrics) * 32 + 15
+        self.text("Range sensors", (left, sensors_y), "heading")
         status = "Map rays on" if self.show_rays else "Map rays off"
-        self.text(f"{len(ray_distances)} sensors   /   {status}", (left, 407), "small", MUTED)
-        chart = pygame.Rect(left, 436, right - left, 76)
+        self.text(f"{len(ray_distances)} sensors   /   {status}", (left, sensors_y + 27), "small", MUTED)
+        chart_y = sensors_y + 56
+        chart = pygame.Rect(left, chart_y, right - left, 55)
         pygame.draw.rect(self.canvas, FIELD, chart, border_radius=5)
         scale = max(float(self.params.perception_radius), 0.001)
         for index, distance in enumerate(ray_distances):
@@ -237,7 +253,7 @@ class PygameFrontend:
             color = MOVING if distance < scale - 0.001 else SENSOR
             bar = pygame.Rect(start + 1, chart.bottom - 5 - height, max(1, end - start - 2), height)
             pygame.draw.rect(self.canvas, color, bar, border_radius=1)
-        self.text("Amber bars mark detected obstacles", (left, 531), "small", MUTED)
+        self.text("Amber bars mark detected obstacles", (left, chart_y + 61), "small", MUTED)
 
     def draw(self):
         state, observation, reward = jax.device_get((self.state, self.obs, self.reward))
@@ -248,7 +264,7 @@ class PygameFrontend:
         self.draw_map(state, rays, ray_distances)
         self.draw_telemetry(state, observation, ray_distances, reward)
         self.text(
-            "WASD / Arrows   Drive     Space   Pause     R   Reset     V   Rays     Esc   Exit",
+            "W/S Accel/Reverse   A/D Steer   Space Pause   R Reset   V Rays   Esc Exit",
             (24, 616),
             "label",
             MUTED,
@@ -270,8 +286,28 @@ class PygameFrontend:
 
     def handle_keys(self):
         keys = pygame.key.get_pressed()
-        x = int(keys[pygame.K_RIGHT] or keys[pygame.K_d]) - int(keys[pygame.K_LEFT] or keys[pygame.K_a])
-        y = int(keys[pygame.K_UP] or keys[pygame.K_w]) - int(keys[pygame.K_DOWN] or keys[pygame.K_s])
+        forward = int(keys[pygame.K_UP] or keys[pygame.K_w])
+        backward = int(keys[pygame.K_DOWN] or keys[pygame.K_s])
+        left = int(keys[pygame.K_LEFT] or keys[pygame.K_a])
+        right = int(keys[pygame.K_RIGHT] or keys[pygame.K_d])
+
+        if self.vehicle_controls:
+            # The robotaxi action is [acceleration in m/s^2, steering in rad].
+            if forward == backward:
+                acceleration = 0.0
+            elif forward:
+                acceleration = float(self.params.max_acceleration)
+            else:
+                acceleration = -float(self.params.max_reverse_acceleration)
+            steering = (
+                left * float(self.params.max_steering_angle)
+                - right * float(self.params.max_steering_angle)
+            )
+            return jnp.array([acceleration, steering], dtype=jnp.float32)
+
+        # Keep the original direction-control interface for BaseEnv demos.
+        x = right - left
+        y = forward - backward
         scale = math.hypot(x, y) or 1
         return jnp.array([x / scale, y / scale], dtype=jnp.float32)
 
