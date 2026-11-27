@@ -1,4 +1,8 @@
 import math
+from datetime import datetime
+from pathlib import Path
+
+import imageio.v2 as imageio
 
 import jax
 import jax.numpy as jnp
@@ -27,7 +31,8 @@ SENSOR = (131, 186, 202)
 
 
 class PygameFrontend:
-    def __init__(self, env, env_params, init_state, eval_mode=False, agent_fn=None):
+    def __init__(self, env, env_params, init_state, eval_mode=False, agent_fn=None,
+                 video_path=None, record_video=True):
         pygame.display.init()
         pygame.font.init()
         self.env = env
@@ -38,6 +43,18 @@ class PygameFrontend:
         self.vehicle_controls = bool(getattr(base_env, "uses_vehicle_controls", False))
         self.eval_mode = eval_mode
         self.agent_fn = agent_fn
+        self.video_writer = None
+        self.video_path = Path(video_path) if video_path else None
+        if record_video:
+            if self.video_path is None:
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                self.video_path = Path("artifacts") / f"simulator_{stamp}" / "episode.mp4"
+            self.video_path.parent.mkdir(parents=True, exist_ok=True)
+            self.video_writer = imageio.get_writer(
+                str(self.video_path), fps=int(env_params.fps), codec="libx264",
+                macro_block_size=1,
+            )
+            print(f"Recording simulator video: {self.video_path}")
         self.screen = pygame.display.set_mode(CANVAS_SIZE, pygame.RESIZABLE)
         pygame.display.set_caption("IAEML | Driving simulator")
         self.canvas = pygame.Surface(CANVAS_SIZE).convert()
@@ -283,6 +300,10 @@ class PygameFrontend:
             self.screen.fill(BACKGROUND)
             self.screen.blit(pygame.transform.smoothscale(self.canvas, target.size), target)
         pygame.display.flip()
+        if self.video_writer is not None:
+            # Record the full-resolution simulator canvas, not the resized window.
+            frame = pygame.surfarray.array3d(self.canvas).swapaxes(0, 1)
+            self.video_writer.append_data(frame)
 
     def handle_keys(self):
         keys = pygame.key.get_pressed()
@@ -344,4 +365,7 @@ class PygameFrontend:
                 self.draw()
                 self.clock.tick(self.params.fps)
         finally:
+            if self.video_writer is not None:
+                self.video_writer.close()
+                print(f"Video saved: {self.video_path}")
             pygame.quit()

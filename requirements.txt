@@ -2,7 +2,8 @@ jax
 chex
 optax
 equinox
-flax        # use flax or equinox
+flax  # PPO actor-critic network
 
 numpy
 pygame
+imageio[ffmpeg]
