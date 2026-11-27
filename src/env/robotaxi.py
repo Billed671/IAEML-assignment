@@ -1,12 +1,16 @@
-"""Robotaxi environment with continuous acceleration and steering controls.
+"""Physics-based robotaxi environment built on top of :class:`BaseEnv`.
 
-The environment reuses the maps, perception sensors, collision geometry and
-path planner from BaseEnv. The vehicle itself is represented by a circular
-collider and follows a kinematic single-track (bicycle) model.
+The map, path planner, range sensors and obstacle handling are inherited from
+``BaseEnv``.  The vehicle is controlled by a longitudinal acceleration and a
+front-wheel steering angle, and its motion follows a kinematic bicycle model.
+
+World coordinates use metres and seconds.  The map is intentionally small,
+so this is a simplified planar vehicle model rather than a full automotive
+simulator.
 """
 
 from functools import partial
-from typing import Tuple, Dict, Any
+from typing import Any, Dict, Tuple
 
 import chex
 import jax
@@ -17,9 +21,9 @@ from utils import utils
 
 
 class RobotaxiEnvParams(BaseEnvParams):
-    """Static environment and vehicle parameters."""
+    """Static map, vehicle, physics and reward parameters."""
 
-    # Vehicle dynamics
+    # Vehicle and actuator limits (SI units).
     max_speed: float
     max_reverse_speed: float
     max_acceleration: float
@@ -28,15 +32,21 @@ class RobotaxiEnvParams(BaseEnvParams):
     max_steering_angle: float
     max_steering_rate: float
     wheelbase: float
+
+    # Physical properties and resistance coefficients.
+    vehicle_mass: float
     rolling_resistance: float
     aerodynamic_drag: float
+    frontal_area: float
+    air_density: float
     tire_friction_coefficient: float
     gravity: float
 
-    # Reward weights
+    # Reward weights.
     progress_reward_scale: float
     path_deviation_penalty: float
     steering_penalty: float
+    acceleration_penalty: float
     step_penalty: float
     goal_reward: float
     collision_penalty: float
@@ -44,14 +54,14 @@ class RobotaxiEnvParams(BaseEnvParams):
 
 
 class RobotaxiState(BaseEnvState):
-    """Base environment state plus the vehicle's dynamic state."""
+    """Base environment state plus longitudinal speed and steering angle."""
 
     speed: chex.Array
     steering_angle: chex.Array
 
 
 class RobotaxiObservation(BaseEnvObservation):
-    """Navigation and perception data plus vehicle-specific observations."""
+    """Navigation/perception observations and vehicle-specific measurements."""
 
     speed: chex.Array
     steering_angle: chex.Array
@@ -60,7 +70,7 @@ class RobotaxiObservation(BaseEnvObservation):
     heading_direction: chex.Array
 
     def as_vector(self) -> chex.Array:
-        """Return a flat vector suitable for a policy network."""
+        """Flatten all observations into a vector for a policy network."""
         return jnp.concatenate(
             [
                 jnp.atleast_1d(self.distance_to_path),
@@ -77,21 +87,22 @@ class RobotaxiObservation(BaseEnvObservation):
 
 
 class RobotaxiEnv(BaseEnv):
-    """A continuous-control robotaxi environment.
+    """Continuous-control robotaxi environment with a simple vehicle model.
 
-    Action space:
-        action[0]: signed drive command in [-1, 1]. Positive requests forward
-                   motion; negative requests reverse. If the vehicle is moving
-                   in the opposite direction, the command first brakes it.
-        action[1]: steering command in [-1, 1]. Negative means right and
-                   positive means left.
+    Action space (shape ``(2,)``):
+        ``action[0]`` is the requested longitudinal acceleration in m/s^2.
+        Positive values accelerate forward; negative values brake or drive in
+        reverse after the car stops.
+        ``action[1]`` is the requested front-wheel steering angle in radians.
+        Positive angles steer left and negative angles steer right.
 
-    Observation:
-        BaseEnv path direction, distance to path and collision rays, together
-        with speed, steering angle, distance to the goal and heading alignment.
+    The action is clipped to the physical actuator limits.  A finite steering
+    rate models actuator response.  Longitudinal and lateral tyre forces share
+    a friction circle, so the car cannot brake/accelerate and turn with
+    unlimited grip at the same time.
 
-    The agent remains a circle of the same radius as in BaseEnv, so the
-    existing collision checks and renderer can be reused.
+    A ``max_steps`` value of zero disables the time limit.  Reaching the goal
+    or colliding with an obstacle still terminates the current episode.
     """
 
     uses_vehicle_controls = True
@@ -100,36 +111,46 @@ class RobotaxiEnv(BaseEnv):
     def init_params(
         key: chex.PRNGKey,
         map_id: int,
-        max_steps: int,
-        path_length: int,
+        max_steps: int = 0,
+        path_length: int = 100,
         discretization_scale: int = 1,
         perception_radius: float = 5.0,
         num_ray_sensors: int = 32,
         fov: float = jnp.pi,
-        fps: float = 60,
-        # Vehicle parameters are expressed in map units and seconds.
+        fps: int = 60,
+        # Vehicle limits.
         max_speed: float = 7.0,
         max_reverse_speed: float = 3.5,
-        max_acceleration: float = 5.0,
-        max_reverse_acceleration: float = 3.0,
-        max_braking: float = 7.0,
+        max_acceleration: float = 3.0,
+        max_reverse_acceleration: float = 2.0,
+        max_braking: float = 6.0,
         max_steering_angle: float = 0.55,
         max_steering_rate: float = 1.5,
         wheelbase: float = 2.5,
-        rolling_resistance: float = 0.12,
-        aerodynamic_drag: float = 0.025,
+        # Simplified SI physics parameters.
+        vehicle_mass: float = 1200.0,
+        rolling_resistance: float = 0.015,
+        aerodynamic_drag: float = 0.8,
+        frontal_area: float = 2.2,
+        air_density: float = 1.225,
         tire_friction_coefficient: float = 0.8,
         gravity: float = 9.81,
-        # Reward parameters
+        # Reward parameters.
         progress_reward_scale: float = 2.0,
         path_deviation_penalty: float = 0.05,
         steering_penalty: float = 0.01,
+        acceleration_penalty: float = 0.002,
         step_penalty: float = 0.005,
         goal_reward: float = 25.0,
         collision_penalty: float = 15.0,
         timeout_penalty: float = 3.0,
     ) -> Tuple[RobotaxiEnvParams, RobotaxiState]:
-        """Create parameters and the initial state for a selected map."""
+        """Create environment parameters and the initial vehicle state."""
+        if max_steps < 0:
+            raise ValueError("max_steps must be zero (unlimited) or positive")
+        if fps <= 0 or wheelbase <= 0 or vehicle_mass <= 0:
+            raise ValueError("fps, wheelbase and vehicle_mass must be positive")
+
         base_params, base_state = BaseEnv.init_params(
             key=key,
             map_id=map_id,
@@ -161,28 +182,32 @@ class RobotaxiEnv(BaseEnv):
             max_steering_angle=max_steering_angle,
             max_steering_rate=max_steering_rate,
             wheelbase=wheelbase,
+            vehicle_mass=vehicle_mass,
             rolling_resistance=rolling_resistance,
             aerodynamic_drag=aerodynamic_drag,
+            frontal_area=frontal_area,
+            air_density=air_density,
             tire_friction_coefficient=tire_friction_coefficient,
             gravity=gravity,
             progress_reward_scale=progress_reward_scale,
             path_deviation_penalty=path_deviation_penalty,
             steering_penalty=steering_penalty,
+            acceleration_penalty=acceleration_penalty,
             step_penalty=step_penalty,
             goal_reward=goal_reward,
             collision_penalty=collision_penalty,
             timeout_penalty=timeout_penalty,
         )
 
-        # Start by facing the destination. The policy can change this direction
-        # later through the steering action.
+        # Point the vehicle along the first segment of the planned route.
         initial_heading = base_state.path_array[0] - base_state.agent_pos
         heading_norm = jnp.linalg.norm(initial_heading)
         goal_heading = base_state.goal_pos - base_state.agent_pos
+        fallback_heading = goal_heading / (jnp.linalg.norm(goal_heading) + 1e-8)
         initial_heading = jnp.where(
             heading_norm > 1e-6,
             initial_heading / (heading_norm + 1e-8),
-            goal_heading / (jnp.linalg.norm(goal_heading) + 1e-8),
+            fallback_heading,
         )
 
         init_state = RobotaxiState(
@@ -197,7 +222,6 @@ class RobotaxiEnv(BaseEnv):
             speed=jnp.asarray(0.0, dtype=jnp.float32),
             steering_angle=jnp.asarray(0.0, dtype=jnp.float32),
         )
-
         return env_params, init_state
 
     @staticmethod
@@ -207,25 +231,23 @@ class RobotaxiEnv(BaseEnv):
         env_params: RobotaxiEnvParams,
         init_state: RobotaxiState | None,
     ) -> Tuple[RobotaxiObservation, RobotaxiState]:
-        """Reset the environment to its supplied initial state."""
-        del key  # The current maps are deterministic and do not need randomness.
+        """Reset to the supplied initial state."""
+        del key  # The map/task is fixed for one environment instance.
         if init_state is None:
             raise ValueError("init_state must be provided for RobotaxiEnv")
-        obs = RobotaxiEnv.get_observation(init_state, env_params)
-        return obs, init_state
+        return RobotaxiEnv.get_observation(init_state, env_params), init_state
 
     @staticmethod
     def get_observation(
         env_state: RobotaxiState, env_params: RobotaxiEnvParams
     ) -> RobotaxiObservation:
-        """Build the policy observation from the current state."""
+        """Return route, sensor and vehicle state for the agent."""
         base_obs = BaseEnv.get_observation(env_state, env_params)
         to_goal = env_state.goal_pos - env_state.agent_pos
         distance_to_goal = jnp.linalg.norm(to_goal)
         heading_alignment = jnp.dot(
             env_state.agent_forward_dir, base_obs.direction_of_path
         )
-
         return RobotaxiObservation(
             distance_to_path=base_obs.distance_to_path,
             direction_of_path=base_obs.direction_of_path,
@@ -244,75 +266,94 @@ class RobotaxiEnv(BaseEnv):
         env_state: RobotaxiState,
         action: chex.Array,
         env_params: RobotaxiEnvParams,
-    ) -> Tuple[RobotaxiObservation, RobotaxiState, chex.Scalar, chex.Array, Dict[Any, Any]]:
-        """Advance the car by one time step using a bicycle model."""
-        del key  # No stochastic transition is used in this environment.
+    ) -> Tuple[
+        RobotaxiObservation,
+        RobotaxiState,
+        chex.Scalar,
+        chex.Array,
+        Dict[Any, Any],
+    ]:
+        """Apply one physics step using acceleration and steering angle."""
+        del key  # This environment has deterministic transitions.
 
-        # Action is [signed drive command, steering], both in [-1, 1].
         action = jnp.asarray(action, dtype=jnp.float32)
-        throttle = jnp.clip(action[0], -1.0, 1.0)
-        steering_command = jnp.clip(action[1], -1.0, 1.0)
+        action = jnp.reshape(action, (2,))
+        requested_acceleration = action[0]
+        requested_steering = jnp.clip(
+            action[1],
+            -env_params.max_steering_angle,
+            env_params.max_steering_angle,
+        )
 
         dt = env_params.step_size
         old_speed = env_state.speed
+        speed_epsilon = 1e-4
 
-        # Steering has a finite response rate instead of changing instantly.
-        target_steering = steering_command * env_params.max_steering_angle
+        # The braking limit is stronger than the normal reverse acceleration.
+        # At zero speed the negative action starts reversing the vehicle.
+        max_positive_accel = jnp.where(
+            old_speed < -speed_epsilon,
+            env_params.max_braking,
+            env_params.max_acceleration,
+        )
+        max_negative_accel = jnp.where(
+            old_speed > speed_epsilon,
+            env_params.max_braking,
+            env_params.max_reverse_acceleration,
+        )
+        commanded_acceleration = jnp.clip(
+            requested_acceleration,
+            -max_negative_accel,
+            max_positive_accel,
+        )
+
+        # Steering is rate-limited to represent the steering actuator.
         max_steering_change = env_params.max_steering_rate * dt
         steering_change = jnp.clip(
-            target_steering - env_state.steering_angle,
+            requested_steering - env_state.steering_angle,
             -max_steering_change,
             max_steering_change,
         )
         new_steering = env_state.steering_angle + steering_change
 
-        # A signed drive command selects forward (positive) or reverse (negative).
-        # If the command opposes the current motion, apply the stronger brake
-        # first. Once the speed reaches zero, a held command starts the other
-        # direction on the next step.
-        moving_against_command = old_speed * throttle < 0.0
-        forward_or_reverse_acceleration = jnp.where(
-            throttle >= 0.0,
-            throttle * env_params.max_acceleration,
-            throttle * env_params.max_reverse_acceleration,
+        # Longitudinal forces: drive/brake, rolling resistance and air drag.
+        # F_drive = m*a_command; both resistance forces oppose current motion.
+        mass = env_params.vehicle_mass
+        rolling_force = (
+            env_params.rolling_resistance
+            * mass
+            * env_params.gravity
+            * jnp.sign(old_speed)
         )
-        braking_acceleration = -jnp.sign(old_speed) * (
-            jnp.abs(throttle) * env_params.max_braking
-        )
-        commanded_acceleration = jnp.where(
-            moving_against_command,
-            braking_acceleration,
-            forward_or_reverse_acceleration,
-        )
-
-        # Rolling resistance and aerodynamic drag always oppose the motion.
-        rolling_force = env_params.rolling_resistance * jnp.sign(old_speed)
         aerodynamic_force = (
-            env_params.aerodynamic_drag * old_speed * jnp.abs(old_speed)
+            0.5
+            * env_params.air_density
+            * env_params.aerodynamic_drag
+            * env_params.frontal_area
+            * old_speed
+            * jnp.abs(old_speed)
         )
-        raw_acceleration = commanded_acceleration - rolling_force - aerodynamic_force
+        drive_force = mass * commanded_acceleration
+        raw_tire_force = drive_force - rolling_force
 
-        # The tire-road friction coefficient limits the available acceleration.
-        friction_limit = (
-            env_params.tire_friction_coefficient * env_params.gravity
+        # The tyre-road friction coefficient limits the force transmitted
+        # through the tyres. Aerodynamic drag is an external force and is
+        # applied after this tyre-force limit.
+        max_tire_force = (
+            env_params.tire_friction_coefficient * mass * env_params.gravity
         )
-        longitudinal_acceleration = jnp.clip(
-            raw_acceleration, -friction_limit, friction_limit
+        longitudinal_force = jnp.clip(
+            raw_tire_force, -max_tire_force, max_tire_force
         )
+        net_longitudinal_force = longitudinal_force - aerodynamic_force
+        longitudinal_acceleration = net_longitudinal_force / mass
+        tire_longitudinal_acceleration = longitudinal_force / mass
         candidate_speed = old_speed + longitudinal_acceleration * dt
 
-        # Do not jump from forward to reverse (or vice versa) in one braking
-        # step. A continued opposite command starts the new direction next step.
-        crossed_zero_while_braking = jnp.logical_and(
-            moving_against_command,
-            jnp.logical_or(
-                jnp.logical_and(old_speed > 0.0, candidate_speed < 0.0),
-                jnp.logical_and(old_speed < 0.0, candidate_speed > 0.0),
-            ),
-        )
-        candidate_speed = jnp.where(
-            crossed_zero_while_braking, 0.0, candidate_speed
-        )
+        # Do not let resistance or braking numerically push the vehicle through
+        # zero speed. A continued reverse/forward command moves it next frame.
+        crossed_zero = old_speed * candidate_speed < 0.0
+        candidate_speed = jnp.where(crossed_zero, 0.0, candidate_speed)
         new_speed = jnp.clip(
             candidate_speed,
             -env_params.max_reverse_speed,
@@ -320,32 +361,43 @@ class RobotaxiEnv(BaseEnv):
         )
         average_speed = 0.5 * (old_speed + new_speed)
 
-        # Kinematic bicycle model: yaw_rate = v / L * tan(steering_angle).
+        # Kinematic bicycle model: yaw_rate = v/L * tan(delta).
         requested_yaw_rate = (
-            average_speed
-            / env_params.wheelbase
-            * jnp.tan(new_steering)
+            average_speed / env_params.wheelbase * jnp.tan(new_steering)
         )
 
-        # Limit lateral acceleration to the tire grip available on the road.
-        max_yaw_rate = friction_limit / (jnp.abs(average_speed) + 1e-6)
-        yaw_rate = jnp.clip(
-            requested_yaw_rate, -max_yaw_rate, max_yaw_rate
+        # Friction circle: longitudinal and lateral tyre forces share grip.
+        # a_lat = v*yaw_rate; reduce the yaw rate when grip is insufficient.
+        friction_acceleration = (
+            env_params.tire_friction_coefficient * env_params.gravity
         )
+        available_lateral_acceleration = jnp.sqrt(
+            jnp.maximum(
+                friction_acceleration**2 - tire_longitudinal_acceleration**2,
+                0.0,
+            )
+        )
+        requested_lateral_acceleration = jnp.abs(
+            average_speed * requested_yaw_rate
+        )
+        grip_scale = jnp.minimum(
+            1.0,
+            available_lateral_acceleration
+            / (requested_lateral_acceleration + 1e-8),
+        )
+        yaw_rate = requested_yaw_rate * grip_scale
         yaw_change = yaw_rate * dt
 
-        # Midpoint integration gives a more accurate position update at turns.
+        # Midpoint integration reduces position error while cornering.
         midpoint_heading = utils.rotate_2d(
             env_state.agent_forward_dir, 0.5 * yaw_change
         )
         displacement = average_speed * dt * midpoint_heading
         candidate_position = env_state.agent_pos + displacement
-        new_heading = utils.rotate_2d(
-            env_state.agent_forward_dir, yaw_change
-        )
+        new_heading = utils.rotate_2d(env_state.agent_forward_dir, yaw_change)
         new_heading = new_heading / (jnp.linalg.norm(new_heading) + 1e-8)
 
-        # Move dynamic obstacles using the original environment's motion rule.
+        # Advance moving obstacles before testing the car's new position.
         new_kinematic_obstacles = BaseEnv._move_kinematic_obstacles(
             env_state, env_params
         )
@@ -353,7 +405,8 @@ class RobotaxiEnv(BaseEnv):
             [env_state.static_obstacles, new_kinematic_obstacles], axis=0
         )
 
-        # Check the middle and end points to reduce the chance of tunnelling.
+        # Check an intermediate point as well as the endpoint to reduce
+        # tunnelling through obstacles at higher speeds.
         midpoint_position = env_state.agent_pos + 0.5 * displacement
         collision_midpoint = BaseEnv._check_collisions(
             midpoint_position, new_obstacles
@@ -361,16 +414,22 @@ class RobotaxiEnv(BaseEnv):
         collision_endpoint = BaseEnv._check_collisions(
             candidate_position, new_obstacles
         )
-        collision_done = jnp.logical_or(collision_midpoint, collision_endpoint)
+        collision_done = jnp.logical_or(
+            collision_midpoint, collision_endpoint
+        )
         goal_done = BaseEnv._check_goal(candidate_position, env_state.goal_pos)
 
         new_time = env_state.time + 1
-        time_done = new_time >= env_params.max_steps_in_episode
+        # max_steps == 0 means an unlimited episode.
+        time_done = jnp.logical_and(
+            env_params.max_steps_in_episode > 0,
+            new_time >= env_params.max_steps_in_episode,
+        )
         done = jnp.logical_or(
             goal_done, jnp.logical_or(collision_done, time_done)
         )
 
-        # Re-plan once per simulated second so moving obstacles can be considered.
+        # Re-plan once per simulated second to account for moving obstacles.
         should_replan = jnp.equal(jnp.mod(new_time, env_params.fps), 0)
         path_array = jax.lax.cond(
             should_replan,
@@ -398,7 +457,7 @@ class RobotaxiEnv(BaseEnv):
         )
         obs = RobotaxiEnv.get_observation(new_state, env_params)
 
-        # Dense reward encourages progress and staying close to the planned path.
+        # Dense reward: make progress, follow the route and avoid harsh inputs.
         old_goal_distance = jnp.linalg.norm(
             env_state.goal_pos - env_state.agent_pos
         )
@@ -412,32 +471,44 @@ class RobotaxiEnv(BaseEnv):
             * jnp.abs(new_steering)
             / (env_params.max_steering_angle + 1e-8)
         )
+        acceleration_penalty = (
+            env_params.acceleration_penalty
+            * jnp.square(commanded_acceleration)
+        )
 
         goal_bonus = jnp.where(goal_done, env_params.goal_reward, 0.0)
-        crash_penalty = jnp.where(
+        collision_cost = jnp.where(
             collision_done, env_params.collision_penalty, 0.0
         )
-        timeout_penalty = jnp.where(
+        timeout_cost = jnp.where(
             jnp.logical_and(time_done, jnp.logical_not(goal_done)),
             env_params.timeout_penalty,
             0.0,
         )
-
         reward = (
             progress_reward
             - path_penalty
             - steering_penalty
+            - acceleration_penalty
             - env_params.step_penalty
             + goal_bonus
-            - crash_penalty
-            - timeout_penalty
+            - collision_cost
+            - timeout_cost
         )
 
         info = {
             "time": new_time,
             "speed": new_speed,
-            "reverse": new_speed < 0.0,
+            "acceleration": longitudinal_acceleration,
+            "commanded_acceleration": commanded_acceleration,
             "steering_angle": new_steering,
+            "yaw_rate": yaw_rate,
+            "lateral_acceleration": average_speed * yaw_rate,
+            "available_lateral_acceleration": available_lateral_acceleration,
+            "longitudinal_force": longitudinal_force,
+            "net_longitudinal_force": net_longitudinal_force,
+            "rolling_resistance_force": rolling_force,
+            "aerodynamic_drag_force": aerodynamic_force,
             "distance_to_goal": obs.distance_to_goal,
             "distance_to_path": obs.distance_to_path,
             "heading_alignment": obs.heading_alignment,
@@ -446,5 +517,4 @@ class RobotaxiEnv(BaseEnv):
             "collision": collision_done,
             "timeout": time_done,
         }
-
         return obs, new_state, reward, done, info
