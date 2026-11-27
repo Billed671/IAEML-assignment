@@ -129,14 +129,20 @@ class PygameFrontend:
         self.text("Driving simulator", (24, 40), "title")
         badge = pygame.Rect(889, 30, 167, 34)
         self.draw_panel(badge)
-        color = MOVING if self.paused else GOAL
-        pygame.draw.circle(self.canvas, color, (906, 47), 4)
-        if self.paused:
+        color = GOAL
+        if self.info.get("goal_reached", False):
+            status = "Goal reached"
+        elif self.info.get("collision", False):
+            status = "Collision"
+            color = MOVING
+        elif self.paused:
             status = "Paused"
+            color = MOVING
         elif self.eval_mode and self.agent_fn is not None:
             status = "Policy control"
         else:
             status = "Manual control"
+        pygame.draw.circle(self.canvas, color, (906, 47), 4)
         self.text(status, (920, 40), "small")
 
     def draw_map(self, state, rays, ray_distances):

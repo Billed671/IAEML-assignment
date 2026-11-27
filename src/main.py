@@ -25,6 +25,7 @@ def parse_args():
     parser.add_argument("--episode-horizon", type=int, default=1200)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--max-steps", type=int, default=0, help="play/eval episode limit; 0 means unlimited")
     parser.add_argument("--artifacts-dir", type=str, default="artifacts")
     parser.add_argument(
         "--no-record", action="store_true",
@@ -33,6 +34,7 @@ def parse_args():
     parser.add_argument(
         "--checkpoint", type=str, default="models/robotaxi_ppo.msgpack"
     )
+    parser.add_argument("--init-checkpoint", type=str, help="initialize PPO from a pretrained checkpoint")
     return parser.parse_args()
 
 
@@ -43,7 +45,7 @@ def run_simulator(args):
     env_params, init_state = RobotaxiEnv.init_params(
         key=key,
         map_id=args.map_id,
-        max_steps=1024,
+        max_steps=args.max_steps,
         discretization_scale=1,
         path_length=100,
         fps=60,
@@ -91,6 +93,7 @@ def main():
             seed=args.seed,
             checkpoint_path=args.checkpoint,
             artifacts_dir=args.artifacts_dir,
+            initial_checkpoint=args.init_checkpoint,
         )
         return
 

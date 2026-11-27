@@ -4,29 +4,29 @@
 
 The goal of Stage 1 is to replace the point-mass movement in `BaseEnv` with a simple vehicle model. The new `RobotaxiEnv` inherits from `BaseEnv` and reuses its maps, obstacle representation, ray sensors, collision helpers, and path planner.
 
-The vehicle is represented as a circle with the same radius as the original agent. This keeps collision checking and visualization compatible with the supplied project.
+Collision detection checks the vehicle position against the same obstacle radius convention as `BaseEnv`.
 
 ## 2. Vehicle state
 
 The original state is extended with two dynamic variables:
 
-- `speed` — current forward speed in map units per second;
+- `speed` — current signed speed in meters per second, with negative values for reverse;
 - `steering_angle` — current front-wheel steering angle in radians.
 
-The inherited `agent_pos` is the vehicle position, and `agent_forward_dir` is its normalized heading vector. Reverse driving is not modeled: a negative throttle command brakes the vehicle until its speed reaches zero.
+The inherited `agent_pos` is the vehicle position, and `agent_forward_dir` is its normalized heading vector. A negative acceleration request brakes the vehicle while it is moving forward and starts reverse motion after it stops.
 
 ## 3. Action space
 
 The action is a two-dimensional continuous vector:
 
 \[
- a_t = [u_t, s_t], \qquad u_t,s_t \in [-1,1].
+ a_t = [a_{\mathrm{req}}, \delta_{\mathrm{req}}].
 \]
 
-- `u_t` is throttle. Positive values accelerate; negative values brake.
-- `s_t` is steering. Negative values steer right; positive values steer left.
+- `a_req` is requested longitudinal acceleration in m/s².
+- `delta_req` is requested steering angle in radians. Positive values steer left and negative values steer right.
 
-The environment clips both values to the interval `[-1, 1]`. The steering actuator has a finite steering rate, so the steering angle cannot change instantly.
+The environment clips requests to the configured actuator limits. The steering actuator also applies a finite steering rate.
 
 ## 4. Vehicle dynamics and forces
 
@@ -38,37 +38,28 @@ The implementation uses a kinematic single-track (bicycle) model. The simulation
 
 ### 4.1 Longitudinal dynamics
 
-The commanded acceleration depends on the sign of throttle:
+The commanded acceleration clips the requested acceleration to the limits for the current direction of motion:
 
 \[
- a_{cmd} =
- \begin{cases}
- u_t a_{max}, & u_t \ge 0,\\
- u_t a_{brake}, & u_t < 0.
- \end{cases}
+ a_{\mathrm{cmd}} = \mathrm{clip}(a_{\mathrm{req}}, a_{\min}(v_t), a_{\max}(v_t)).
 \]
 
-Rolling resistance and aerodynamic drag are subtracted:
+The tyre force includes drive or braking force and rolling resistance. Aerodynamic drag is applied after limiting the tyre force:
 
 \[
- a_{raw} = a_{cmd} - c_r\,\mathrm{sign}(v_t) - c_d v_t |v_t|.
+ F_{\mathrm{tyre}} = \mathrm{clip}(m a_{\mathrm{cmd}} - F_{\mathrm{rolling}}, -\mu m g, \mu m g),
+ \qquad a_{\mathrm{net}} = (F_{\mathrm{tyre}} - F_{\mathrm{drag}})/m.
 \]
 
-The tire-road friction coefficient limits the available longitudinal acceleration:
+Speed is integrated and clipped to the configured forward and reverse limits. If braking or resistance would cross zero in one step, the vehicle stops at zero for that step.
 
 \[
- |a_t| \leq \mu g.
-\]
-
-Speed is then integrated and clipped to the physical interval:
-
-\[
- v_{t+1} = \mathrm{clip}(v_t + a_t\Delta t, 0, v_{max}).
+ v_{t+1} = \mathrm{clip}(v_t + a_{\mathrm{net}}\Delta t, -v_{\mathrm{reverse,max}}, v_{\max}).
 \]
 
 ### 4.2 Steering and yaw rate
 
-The requested steering angle is `s_t * max_steering_angle`. A rate limiter models the steering actuator:
+The requested steering angle is clipped to the steering range. A rate limiter models the steering actuator:
 
 \[
  |\delta_{t+1}-\delta_t| \leq \dot\delta_{max}\Delta t.
@@ -83,7 +74,7 @@ The bicycle model computes yaw rate as:
 where `L` is the wheelbase and `v_bar` is the average speed during the step. The yaw rate is also limited so lateral acceleration does not exceed the available tire grip:
 
 \[
- \bar v |\dot\psi| \leq \mu g.
+ |\bar v \dot\psi| \leq \sqrt{\max(0, (\mu g)^2-(F_{\mathrm{tyre}}/m)^2)}.
 \]
 
 The new heading is obtained by rotating the old heading by `yaw_rate * dt`. Position is integrated using the average speed and midpoint heading. This gives a more stable update while the car is turning.
@@ -109,12 +100,13 @@ The observation reuses all `BaseEnv` perception features and adds vehicle inform
 | `distance_to_path` | Distance from the vehicle to the current planned path |
 | `direction_of_path` | Unit vector pointing along the local path direction |
 | `collision_rays` | Ray sensor vectors to nearby obstacles |
-| `speed` | Current forward speed |
+| `speed` | Current signed speed |
 | `steering_angle` | Current steering angle in radians |
 | `distance_to_goal` | Euclidean distance to the destination |
 | `heading_alignment` | Dot product of vehicle heading and local path direction |
+| `heading_direction` | Two components of the vehicle heading vector |
 
-`RobotaxiObservation.as_vector()` flattens these values into one vector for a policy network. With `N` ray sensors, its size is `2N + 7` values: one path-distance value, two path-direction values, `2N` ray coordinates, and four vehicle/goal values.
+`RobotaxiObservation.as_vector()` flattens these values into `2N + 9` numbers for `N` ray sensors. With 32 sensors, the vector has 73 values.
 
 ## 6. Reward function
 
@@ -125,6 +117,7 @@ The reward is dense and combines progress with safety and control costs:
  r_t ={}& w_p(d_t-d_{t+1})
  - w_{path}\,D_{path}
  - w_{steer}\frac{|\delta|}{\delta_{max}}
+ - w_{acc}a_{\mathrm{cmd}}^2
  - c_{step} \\
  &+ R_{goal}\mathbb{1}_{goal}
  - C_{collision}\mathbb{1}_{collision}
@@ -134,7 +127,7 @@ The reward is dense and combines progress with safety and control costs:
 
 Here `d_t` and `d_(t+1)` are the distances to the goal before and after the transition. Positive progress increases reward. Staying close to the planned path and avoiding unnecessary steering are encouraged. Reaching the goal gives a positive terminal bonus, while collision and timeout produce penalties.
 
-The default weights are defined in `RobotaxiEnv.init_params()` and can be changed without editing the transition function.
+The default weights are defined in `RobotaxiEnv.init_params()`. The timeout penalty applies when the time limit is reached without reaching the goal.
 
 ## 7. Termination conditions
 
@@ -171,9 +164,9 @@ When running in an environment with the project dependencies installed, check th
 - pressing `W` increases speed and moves the vehicle forward;
 - pressing `S` reduces speed;
 - pressing `A` and `D` change the heading in opposite directions;
-- speed remains in `[0, max_speed]`;
+- speed remains in `[-max_reverse_speed, max_speed]`;
 - steering remains within the configured maximum angle;
 - collision, goal and time-limit conditions set `done=True`;
 - observations and reward values remain finite during normal driving.
 
-The current execution container did not have `equinox`, `chex`, or `pygame` installed, and package installation was unavailable because network access to the package index failed. Therefore, the implementation could be syntax-checked here, but the interactive renderer and JAX runtime could not be executed in this session. The run command above is the required final runtime check on a machine with the dependencies installed.
+The model and renderer were tested with JAX on CPU and a virtual Pygame display. [Verification results](docs/verification.md) record the tested dynamics, reward, rendering and policy outcomes.

@@ -1,0 +1,12 @@
+{
+  "map_id": 1,
+  "seed": 0,
+  "goal_reached": true,
+  "collision": false,
+  "timeout": false,
+  "steps": 459,
+  "simulated_seconds": 7.65,
+  "distance_to_goal": 0.9740365147590637,
+  "closest_distance": 0.9740365147590637,
+  "episode_return": 24999.66485995613
+}

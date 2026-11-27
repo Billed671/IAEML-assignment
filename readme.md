@@ -1,149 +1,66 @@
-# IAEML — Assignment
+# IAEML Assignment · Robotaxi
 
-This repository is designed to practice concepts from the IAEML course at
-Innopolis University through a small 2D autonomous-driving environment.
-Vehicles, goals and obstacles are represented in a planar world. Static and
-moving obstacles are supported.
+A 2D driving simulator with continuous acceleration and steering. RobotaxiEnv
+extends BaseEnv with bicycle dynamics, braking and reverse motion, rolling
+resistance, aerodynamic drag, and a shared tyre friction limit.
 
-## Environment and vehicle physics
+![Robotaxi simulator, map and telemetry](docs/simulator-preview.png)
 
-The interactive demo uses `RobotaxiEnv`, which extends `BaseEnv` with a
-continuous-control vehicle model. It includes:
+## Run the simulator
 
-- state: position, heading, signed speed and steering angle;
-- continuous actions: longitudinal acceleration (m/s²) and steering angle
-  (radians);
-- a kinematic bicycle model with a finite steering response rate;
-- drive/brake force, rolling resistance and aerodynamic drag;
-- tyre friction limits, including a friction circle shared by longitudinal and
-  lateral acceleration;
-- observations with route information, range sensors and vehicle state;
-- a dense reward for progress, route following and smooth control, with
-  terminal rewards/penalties for goal completion and collisions.
-
-The vehicle model is simplified and operates in a 2D plane. It does not model
-suspension, weight transfer or detailed tyre slip dynamics. More details and
-the equations are in [`docs/stage_1_model.md`](docs/stage_1_model.md).
-
-## Reinforcement learning (PPO)
-
-The repository also includes a continuous-action PPO agent. Its actor outputs
-acceleration and steering commands, while its critic estimates the state
-value. PPO uses clipped policy updates, Generalized Advantage Estimation (GAE),
-parallel environment rollouts and a tanh-squashed Gaussian action distribution.
-The neural network is implemented with Flax and optimization uses Optax.
-
-Install dependencies:
+Use Python 3.11. From the project root:
 
 ```bash
 python -m pip install -r requirements.txt
+python src/main.py --map-id 1 --no-record
 ```
 
-Train an agent (no graphical window is opened during training):
+On macOS, set `JAX_PLATFORM_NAME=cpu` before the command if needed. Interactive
+play runs at 60 simulation steps per second with unlimited episode time by
+default. Use `--max-steps` to set a limit. Leaving out `--no-record` records
+to `artifacts/simulator/<timestamp>/episode.mp4`.
 
-```bash
-python src/main.py --mode train --total-timesteps 500000
-```
-
-Useful training options:
-
-```bash
-python src/main.py --mode train \
-    --map-id 1 \
-    --total-timesteps 1000000 \
-    --num-envs 8 \
-    --rollout-steps 128 \
-    --episode-horizon 1200 \
-    --checkpoint models/robotaxi_ppo.msgpack
-```
-
-The checkpoint and a small JSON metadata file are saved under `models/`.
-The `--map-id` option selects one of the three maps in `src/env/tasks.py`.
-Training currently uses the selected map for all parallel workers; evaluating
-on another map is a useful generalization test, but is not guaranteed to work
-without additional training.
-
-Watch a trained policy:
-
-```bash
-python src/main.py --mode eval --checkpoint models/robotaxi_ppo.msgpack
-```
-
-The evaluation map should match the map used for training:
-
-```bash
-python src/main.py --mode eval --map-id 1 \
-    --checkpoint models/robotaxi_ppo.msgpack
-```
-
-The environment itself is created with `max_steps=0`, so it has no time limit.
-For RL only, `--episode-horizon` applies a trainer-side truncation and reset.
-A truncated transition bootstraps the critic from its final observation; this
-keeps learning batches finite without changing the environment's dynamics or
-its unlimited-step setting. Goal completion and collisions remain true terminal
-states.
-
-## Manual simulator
-
-```bash
-python src/main.py
-```
-
-The demo uses `max_steps=0`, which disables the time limit. Episodes still end
-when the car reaches the goal or collides with an obstacle; the demo then
-resets the environment automatically. A positive `max_steps` can be used for
-finite-horizon experiments.
-
-## Controls
-
-| Keys | Action |
+| Key | Action |
 | --- | --- |
-| W / Up | Accelerate forward |
+| W / Up | Accelerate |
 | S / Down | Brake, then reverse while held |
-| A / Left | Steer left |
-| D / Right | Steer right |
+| A / Left and D / Right | Steer |
 | Space | Pause or resume |
-| R | Reset the current episode |
-| V | Show or hide sensor rays |
+| R | Reset the episode |
+| V | Toggle sensor rays |
 | Esc | Exit |
 
-## Original environment components
-
-`src/env/base.py` provides map generation, collision geometry, perception rays
-and dynamic-programming path planning. `src/env/tasks.py` contains the sample
-maps. The original `BaseEnv` remains available for experiments that need the
-simpler direction-control model; the interactive entry point now launches
-`RobotaxiEnv`.
-
-## Reinforcement learning (PPO)
-
-The project includes an optional PPO agent for continuous vehicle control. Install
-all dependencies (including the FFmpeg-enabled ImageIO package) and run training:
+## Run the trained policy
 
 ```bash
-python -m pip install -r requirements.txt
-python src/main.py --mode train --total-timesteps 500000 --map-id 1
+python src/main.py --mode eval --map-id 1 --no-record
+PYTHONPATH=src python -m algorithms.evaluate --video artifacts/evaluation.mp4
 ```
 
-Each training run creates its own timestamped folder under `artifacts/` with:
+The included PPO checkpoint reached the goal on map 1 in **459 steps
+(7.65 simulation seconds)** with no collision. The single-episode evaluation
+command exits when the episode ends and prints its outcome as JSON.
 
-- `robotaxi_ppo.msgpack` and its JSON metadata (trained policy checkpoint);
-- `training_metrics.csv` (returns, goal/collision counts and PPO losses per update);
-- `run_config.json` (training configuration and total environment steps).
-
-After training, launch the trained policy and automatically record its run:
+## Reproduce training
 
 ```bash
-python src/main.py --mode eval --map-id 1 \
-  --checkpoint artifacts/ppo_map<TIMESTAMP>/robotaxi_ppo.msgpack
+PYTHONPATH=src python -m algorithms.pretrain
+python src/main.py --mode train --map-id 1 \
+  --init-checkpoint models/robotaxi_pretrained.msgpack \
+  --total-timesteps 8192 --num-envs 8 --rollout-steps 128 \
+  --episode-horizon 1024 --learning-rate 0.000003
 ```
 
-Manual simulator runs are recorded as well:
+Pretraining uses a reference controller and labels from states the actor
+visits during its rollout. PPO starts from the resulting checkpoint. Each
+run writes a new checkpoint, its metadata, metrics, and configuration into
+a timestamped directory. To evaluate a checkpoint from a new run, pass its
+path with `--checkpoint`.
 
-```bash
-python src/main.py
-```
+## Report and evidence
 
-Videos are saved as MP4 files under `artifacts/simulator/<timestamp>/episode.mp4`.
-Use `--no-record` to disable video recording, or `--artifacts-dir PATH` to
-change the output directory. Generated artifacts are excluded from Git.
+- [Stage 1 report](report_stage_1.md)
+- [Model equations and parameters](docs/stage_1_model.md)
+- [Successful PPO run](docs/robotaxi-policy-run.mp4)
+- [Verification results](docs/verification.md)
+- [Experiment reflection](reflection.txt)

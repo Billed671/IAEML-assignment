@@ -185,6 +185,7 @@ def train_ppo(
     checkpoint_path="models/robotaxi_ppo.msgpack",
     save_every=10,
     artifacts_dir="artifacts",
+    initial_checkpoint=None,
 ):
     """Train a PPO agent and save its parameters to a Flax msgpack checkpoint."""
     if total_timesteps <= 0 or num_envs <= 0 or rollout_steps <= 0:
@@ -223,6 +224,16 @@ def train_ppo(
     observation_size = int(observation_vector.shape[-1])
     model = ActorCritic(action_dim=2, hidden_size=128)
     model_variables = model.init(model_key, observation_vector)
+    model_parameters = model_variables["params"]
+    if initial_checkpoint is not None:
+        initial_checkpoint = Path(initial_checkpoint)
+        metadata_path = initial_checkpoint.with_suffix(initial_checkpoint.suffix + ".json")
+        if metadata_path.is_file():
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if metadata.get("map_id", map_id) != map_id:
+                raise ValueError("Initial checkpoint was trained on a different map")
+        model_parameters = serialization.from_bytes(model_parameters, initial_checkpoint.read_bytes())
+        print(f"Initialized PPO from {initial_checkpoint}")
 
     optimizer = optax.chain(
         optax.clip_by_global_norm(max_grad_norm),
@@ -230,7 +241,7 @@ def train_ppo(
     )
     train_state = TrainState.create(
         apply_fn=model.apply,
-        params=model_variables["params"],
+        params=model_parameters,
         tx=optimizer,
     )
 
@@ -459,6 +470,7 @@ def train_ppo(
         "num_envs": int(num_envs), "rollout_steps": int(rollout_steps),
         "episode_horizon": int(episode_horizon), "learning_rate": float(learning_rate),
         "checkpoint": checkpoint_path.name,
+        "initial_checkpoint": initial_checkpoint.name if initial_checkpoint else None,
     }
     (run_dir / "run_config.json").write_text(
         json.dumps(run_metadata, indent=2), encoding="utf-8"
@@ -480,6 +492,7 @@ def build_arg_parser():
     parser.add_argument(
         "--checkpoint", type=str, default="models/robotaxi_ppo.msgpack"
     )
+    parser.add_argument("--init-checkpoint", type=str)
     return parser
 
 
@@ -495,4 +508,5 @@ if __name__ == "__main__":
         seed=arguments.seed,
         checkpoint_path=arguments.checkpoint,
         artifacts_dir=arguments.artifacts_dir,
+        initial_checkpoint=arguments.init_checkpoint,
     )
