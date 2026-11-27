@@ -37,7 +37,7 @@ PATHFINDING_MOVES_DIAG = jnp.array(
 class BaseEnvParams(equinox.Module):
     max_steps_in_episode: int
     fps: int
-    step_size: int
+    step_size: float
     map_height_width: Tuple[int, int]
     # Discritized version of the map. used to find a path
     nav_grid_shape_dtype: Tuple[chex.Shape, chex.ArrayDType]
@@ -103,9 +103,9 @@ class BaseEnv:
         path_length: int,
         discretization_scale: int = 1,
         perception_radius: float = 5,
-        num_ray_sensors: float = NUM_RAY_SENSORS,
+        num_ray_sensors: int = NUM_RAY_SENSORS,
         fov: float = FOV,
-        fps: float = FPS,
+        fps: int = FPS,
     ) -> Tuple[BaseEnvParams, BaseEnvState]:
 
         if discretization_scale != 1:
