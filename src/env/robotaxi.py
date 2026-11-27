@@ -124,8 +124,8 @@ class RobotaxiEnv(BaseEnv):
         max_acceleration: float = 3.0,
         max_reverse_acceleration: float = 2.0,
         max_braking: float = 6.0,
-        max_steering_angle: float = 0.55,
-        max_steering_rate: float = 1.5,
+        max_steering_angle: float = 1.10,  # 2x original steering angle
+        max_steering_rate: float = 3.0,  # 2x original steering rate
         wheelbase: float = 2.5,
         # Simplified SI physics parameters.
         vehicle_mass: float = 1200.0,
