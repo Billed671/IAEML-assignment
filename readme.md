@@ -24,9 +24,10 @@ One limitation at the moment is that sampling a new task will always result in r
 
 `base.py` does not implement a model of vehicle dynamics.
 
-You can play it
+Install the dependencies and start the simulator:
 
 ```bash
+python -m pip install -r requirements.txt
 python src/main.py
 ```
 
@@ -36,7 +37,17 @@ There are some issues with JAX on OSX. This solves it
 JAX_PLATFORM_NAME=cpu python src/main.py
 ```
 
-...
+The resizable window shows the navigation map, the planned route, range sensors, and live telemetry.
+
+![Driving simulator with the navigation map, planned route, sensor rays, and telemetry](docs/simulator-preview.png)
+
+| Keys | Action |
+| --- | --- |
+| WASD or arrow keys | Drive the agent |
+| Space | Pause or resume the simulation |
+| R | Reset the current episode |
+| V | Show or hide sensor rays on the map |
+| Esc | Exit |
 
 ---
 
