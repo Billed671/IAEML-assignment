@@ -43,7 +43,7 @@ def run_simulator(args):
     env_params, init_state = RobotaxiEnv.init_params(
         key=key,
         map_id=args.map_id,
-        max_steps=0,  # The simulator has no step limit.
+        max_steps=1024,
         discretization_scale=1,
         path_length=100,
         fps=60,

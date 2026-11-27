@@ -111,13 +111,13 @@ class RobotaxiEnv(BaseEnv):
     def init_params(
         key: chex.PRNGKey,
         map_id: int,
-        max_steps: int = 0,
+        max_steps: int = 1024,
         path_length: int = 100,
         discretization_scale: int = 1,
         perception_radius: float = 5.0,
         num_ray_sensors: int = 32,
         fov: float = jnp.pi,
-        fps: int = 60,
+        fps: int = 5,
         # Vehicle limits.
         max_speed: float = 7.0,
         max_reverse_speed: float = 3.5,
@@ -140,10 +140,10 @@ class RobotaxiEnv(BaseEnv):
         path_deviation_penalty: float = 0.05,
         steering_penalty: float = 0.01,
         acceleration_penalty: float = 0.002,
-        step_penalty: float = 0.005,
-        goal_reward: float = 25.0,
+        step_penalty: float = 0.02,
+        goal_reward: float = 25000.0,
         collision_penalty: float = 15.0,
-        timeout_penalty: float = 3.0,
+        timeout_penalty: float = 15.0,
     ) -> Tuple[RobotaxiEnvParams, RobotaxiState]:
         """Create environment parameters and the initial vehicle state."""
         if max_steps < 0:

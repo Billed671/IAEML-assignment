@@ -1,0 +1,12 @@
+{
+  "algorithm": "PPO",
+  "map_id": 1,
+  "seed": 0,
+  "total_timesteps_requested": 600000,
+  "total_environment_steps": 600064,
+  "num_envs": 8,
+  "rollout_steps": 128,
+  "episode_horizon": 1200,
+  "learning_rate": 0.0003,
+  "checkpoint": "robotaxi_ppo.msgpack"
+}
